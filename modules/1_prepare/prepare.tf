@@ -182,12 +182,6 @@ for cidr in "$${cidrs[@]}"; do
     sudo nmcli connection up "$con_name"
   done
 done
-
-# enable FIPS as required
-if [[ ${var.fips_compliant} = true ]]; then
-  sudo fips-mode-setup --enable
-fi
-
 EOF
     ]
   }
@@ -440,4 +434,52 @@ resource "ibm_pi_network_port" "bastion_internal_vip" {
 
   pi_network_name      = ibm_pi_network.public_network.pi_network_name
   pi_cloud_instance_id = var.service_instance_id
+}
+
+resource "null_resource" "fips_enablement" {
+  count      = var.fips_compliant ? local.bastion_count : 0
+  depends_on = [ibm_pi_image.bastion, ibm_pi_network.public_network, ibm_pi_key.key, ibm_pi_volume.volume, ibm_pi_instance.bastion, null_resource.bastion_init, null_resource.setup_proxy_info, null_resource.bastion_register, null_resource.enable_repos, null_resource.bastion_packages, null_resource.setup_nfs_disk, null_resource.rhel83_fix, ibm_pi_network_port.bastion_vip, ibm_pi_network_port.bastion_internal_vip]
+
+  connection {
+    type        = "ssh"
+    user        = var.rhel_username
+    host        = data.ibm_pi_instance_ip.bastion_public_ip[count.index].external_ip
+    private_key = var.private_key
+    agent       = var.ssh_agent
+    timeout     = "${var.connection_timeout}m"
+  }
+  provisioner "remote-exec" {
+    inline = [
+      <<EOF
+sudo fips-mode-setup --enable
+sudo shutdown -r +1
+EOF
+    ]
+  }
+}
+
+resource "time_sleep" "wait_60_seconds" {
+  count      = var.fips_compliant ? local.bastion_count : 0
+  depends_on = [null_resource.fips_enablement]
+
+  create_duration = "60s"
+}
+
+resource "null_resource" "bastion_nop" {
+  count      = var.fips_compliant ? local.bastion_count : 0
+  depends_on = [null_resource.fips_enablement, time_sleep.wait_60_seconds]
+
+  connection {
+    type        = "ssh"
+    user        = var.rhel_username
+    host        = data.ibm_pi_instance_ip.bastion_public_ip[count.index].external_ip
+    private_key = var.private_key
+    agent       = var.ssh_agent
+    timeout     = "${var.connection_timeout}m"
+  }
+  provisioner "remote-exec" {
+    inline = [
+      "whoami"
+    ]
+  }
 }
